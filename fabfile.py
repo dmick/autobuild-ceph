@@ -135,17 +135,24 @@ def _apt_reinstall_for_backports(*packages):
 def _gem_install(*packages):
     sudo('gem install ' + ' '.join(list(packages)))
 
-def _rh_gitbuilder(flavor, git_repo, extra_remotes={}, extra_packages=[], ignore=[], branches_local_name='branches-local',branch_to_bundle='master'): 
+def _rh_gitbuilder(flavor, git_repo, extra_remotes=None, extra_packages=None, ignore=None, package_install_fn = _rpm_install, branches_local_name='branches-local',branch_to_bundle='master'): 
     """
     extra_remotes will be fetch but not autobuilt. useful for tags.
     """
+    if extra_remotes is None:
+        extra_remotes = dict()
+    if extra_packages is None:
+        extra_packages = list()
+    if ignore is None:
+        ignore = list()
+
     gitbuilder_commit='master'
     gitbuilder_origin='git://github.com/ceph/gitbuilder.git'
 
     sudo("initctl list|grep -q '^autobuild-ceph\s' && stop autobuild-ceph || /etc/init.d/autobuild-ceph stop || :")
     #
     #  Install needed packages
-    _rpm_install(
+    package_install_fn(
         'ntp',
         'ccache',
         'git',
