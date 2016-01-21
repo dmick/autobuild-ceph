@@ -31,6 +31,10 @@ env.roledefs['gitbuilder_ceph_rpm'] = [
     'ubuntu@gitbuilder-ceph-rpm-fedora22-amd64-basic.front.sepia.ceph.com',
     ]
 
+env.roledefs['gitbuilder_ceph_rpm_suse'] = [
+    #'ubuntu@gitbuilder-ceph-rpm-suse-leap42.1.front.sepia.ceph.com',
+]
+
 # kernels
 env.roledefs['gitbuilder_kernel_deb'] = [
     'ubuntu@gitbuilder-kernel-deb-precise-amd64-basic.front.sepia.ceph.com',
