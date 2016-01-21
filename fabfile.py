@@ -77,6 +77,16 @@ def _rpm_install(*packages):
             + list(packages)))
 
 
+def _zypper_install(*packages):
+    sudo(' '.join(
+            [
+                'zypper',
+                '--quiet',
+                '--non-interactive',
+                'install',
+                ]
+            + list(packages)))
+
 def _apt_add_testing_repo(branch):
     sudo('wget -q -O- https://raw.github.com/ceph/ceph/master/keys/autobuild.asc | sudo apt-key add -')
     sudo('echo deb http://gitbuilder.ceph.com/ceph-deb-$(lsb_release -sc)-x86_64-basic/ref/{branch} $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list'.format(branch=branch))
@@ -258,6 +268,124 @@ def _rh_gitbuilder(flavor, git_repo, extra_remotes=None, extra_packages=None, ig
     run('rm bundle')
     sudo('chown -R autobuild-ceph:autobuild-ceph /srv/autobuild-ceph')
     install_git()
+
+def _suse_gitbuilder(flavor, git_repo, extra_remotes={}, extra_packages=[], ignore=[], branches_local_name='branches-local',branch_to_bundle='master'): 
+    """
+    extra_remotes will be fetch but not autobuilt. useful for tags.
+    """
+    gitbuilder_commit='master'
+    gitbuilder_origin='git://github.com/ceph/gitbuilder.git'
+
+    sudo("initctl list|grep -q '^autobuild-ceph\s' && stop autobuild-ceph || /etc/init.d/autobuild-ceph stop || :")
+    #
+    #  Install needed packages
+    _zypper_install(
+        'ntp',
+        'ccache',
+        'git',
+        'logrotate',
+        'rsync',
+        'pkgconfig',
+        'tar',
+        *extra_packages
+        )
+    #
+    #  Create autobuild-ceph user
+    with settings(warn_only=True):
+        sudo(
+            ' '.join([
+                'adduser',
+                '--system',
+                '--home', '/home/autobuild-ceph',
+                '--comment', '"Ceph autobuild"',
+                '--user-group',
+                #'--disabled-password',
+                #'--disabled-login',
+                'autobuild-ceph',
+                ]),
+            )
+        sudo('mkdir -p /home/autobuild-ceph && chown autobuild-ceph /home/autobuild-ceph')
+        # XXX with cd('/home/autobuild-ceph'):
+            # XXX sudo('echo "%_find_debuginfo_dwz_opts %{nil}" > .rpmmacros')
+            # XXX sudo('lsb_release -d -s | grep CentOS | grep -q release\ 7 && echo "%dist .el7" >> .rpmmacros')
+
+    sudo('install -d -m0755 --owner=root --group=root /srv/autobuild-ceph')
+    local('git bundle create bundle refs/heads/{branch_to_bundle}'.format(branch_to_bundle=branch_to_bundle))
+    put('bundle', 'bundle')
+    local('rm -f bundle')
+    with cd('/srv/autobuild-ceph'):
+        sudo('git init')
+        # XXX sudo('test -d /home/ubuntu || ln -sf /home/centos /home/ubuntu')
+        sudo('git pull /home/ubuntu/bundle {branch_to_bundle}'.format(branch_to_bundle=branch_to_bundle))
+        sudo('ln -sf build-{flavor}.sh build.sh'.format(flavor=flavor))
+        brand_new = False
+        if not exists('gitbuilder.git'):
+            brand_new = True
+            sudo('rm -rf gitbuilder.git.tmp')
+            sudo('git clone %s gitbuilder.git.tmp' % gitbuilder_origin)
+            with cd('gitbuilder.git.tmp'):
+                sudo('git checkout %s' % gitbuilder_commit)
+                sudo('ln -s ../build.sh ./')
+                if branches_local_name != 'branches-local':
+                    sudo('mv ./branches-local ./branches-local-orig')
+                sudo('ln -s ../{branches_local_name} ./branches-local'.format(branches_local_name=branches_local_name))
+                sudo('chown -R autobuild-ceph:autobuild-ceph out')
+            sudo('mv gitbuilder.git.tmp gitbuilder.git')
+        with cd('gitbuilder.git'):
+            if not exists('build'):
+                sudo('git clone {git_repo} build'.format(git_repo=git_repo))
+                sudo('chown -R autobuild-ceph:autobuild-ceph build')
+            sudo('git remote set-url origin %s' % gitbuilder_origin)
+            sudo('git fetch origin')
+            sudo('git reset --hard %s' % gitbuilder_commit)
+
+        with cd('gitbuilder.git/build'):
+            sudo(
+                'git remote set-url origin {url}'.format(
+                    url=git_repo,
+                    ),
+                user='autobuild-ceph',
+                )
+            for name, url in extra_remotes.items():
+                sudo(
+                    'git remote set-url {name} {url} || git remote add {name} {url}'.format(
+                        name=name,
+                        url=url,
+                        ),
+                    user='autobuild-ceph',
+                    )
+                sudo('git config remote.{name}.tagopt true'.format(name=name),
+                     user='autobuild-ceph')
+            sudo('git config remote.origin.tagopt true', user='autobuild-ceph')
+            if brand_new:
+                sudo('/srv/autobuild-ceph/mark_all_as_pass.sh',
+                     user='autobuild-ceph')
+                with cd('/srv'):
+                    if not exists('gnupg'):
+                        sudo('mkdir gnupg')
+                    sudo('chown autobuild-ceph:autobuild-ceph gnupg ; chmod 700 gnupg')
+                    with cd('gnupg'):
+                        if not exists('pubring.gpg'):
+                            # put doesn't honor cd() for some reason
+                            put('gnupg/pubring.gpg')
+                            put('gnupg/secring.gpg')
+                            put('trustdb.gpg')
+                            sudo("mv /home/ubuntu/*.gpg ./")
+                            sudo('chown autobuild-ceph:autobuild-ceph pubring.gpg secring.gpg trustdb.gpg')
+                            sudo('chmod 600 pubring.gpg secring.gpg trustdb.gpg')
+        with cd('/srv/autobuild-ceph'):
+            if ignore:
+                sudo('install -d -m0755 --owner=autobuild-ceph --group=autobuild-ceph gitbuilder.git/out/ignore')
+                for sha in ignore:
+                    sudo('touch gitbuilder.git/out/ignore/{sha}'.format(sha=sha))
+            sudo('install -d -m0755 --owner=autobuild-ceph --group=autobuild-ceph ccache')
+            sudo('install -d -m0755 logs')
+
+            sudo('install --owner=root --group=root -m0755 autobuild-ceph.init /etc/init.d/autobuild-ceph')
+    run('rm bundle')
+    sudo('chown -R autobuild-ceph:autobuild-ceph /srv/autobuild-ceph')
+    install_git()
+
 
 def _gitbuilder(flavor, git_repo, extra_remotes={}, extra_packages=[], ignore=[], branches_local_name='branches-local', branch_to_bundle='master'):
     """
@@ -689,25 +817,24 @@ def gitbuilder_auto():
     sudo('start autobuild-ceph || /etc/init.d/autobuild-ceph start ; systemctl enable autobuild-ceph || true ; systemctl start autobuild-ceph || true')
     _sync_to_gitbuilder_from_hostname()
 
-@roles('gitbuilder_ceph_rpm')
-def gitbuilder_ceph_rpm():
-    _gitbuilder_ceph_rpm('https://github.com/ceph/ceph.git', 'auto',
-                         extra_remotes=dict(
-                             ci='https://github.com/ceph/ceph-ci.git'
-                         ))
+
+@roles('gitbuilder_ceph_rpm_suse')
+def gitbuilder_ceph_rpm_suse():
+    _gitbuilder_ceph_rpm_suse('https://github.com/ceph/ceph.git', 'auto',
+                              extra_remotes=dict(
+                              ci='https://github.com/ceph/ceph-ci.git'
+                             ))
     hostname = run('hostname -s')
     flavor = hostname.split('-')[-1]
     _sync_to_gitbuilder('ceph', 'rpm', flavor)
 
-def _gitbuilder_ceph_rpm(url, flavor, extra_remotes={}):
-    if '6-' in run('hostname -s'):
-        sphinx = 'python-sphinx10'
-    else:
-        sphinx = 'python-sphinx'
+
+def _gitbuilder_ceph_rpm_suse(url, flavor, extra_remotes={}):
     _rh_gitbuilder(
         flavor=flavor,
         git_repo=url,
         extra_remotes=extra_remotes,
+        package_install_fn=_zypper_install,
         extra_packages=[
             'pkgconfig',
             'automake',
@@ -749,7 +876,6 @@ def _gitbuilder_ceph_rpm(url, flavor, extra_remotes={}):
             'nss-devel',
             'gtkmm24',
             'gtkmm24-devel',
-#            'junit4',
             'sharutils',
             'gnupg',
             'expect',
@@ -766,7 +892,7 @@ def _gitbuilder_ceph_rpm(url, flavor, extra_remotes={}):
             'python-requests',
             'python-virtualenv',
             'python-argparse',
-            sphinx,
+            'python-sphinx',
             'lttng-ust-devel',
             'libbabeltrace-devel',
             'cryptsetup',
@@ -775,7 +901,16 @@ def _gitbuilder_ceph_rpm(url, flavor, extra_remotes={}):
     with cd('/srv/autobuild-ceph'):
         sudo('echo centos6 > dists')
     sudo('start autobuild-ceph || /etc/init.d/autobuild-ceph start ; systemctl enable autobuild-ceph || true ; systemctl start autobuild-ceph || true')
-
+@roles('gitbuilder_ceph_rpm')
+def gitbuilder_ceph_rpm():
+    import pdb; pdb.set_trace();
+    _gitbuilder_ceph_rpm('https://github.com/ceph/ceph.git', 'auto',
+                         extra_remotes=dict(
+                             ci='https://github.com/ceph/ceph-ci.git'
+                         ))
+    hostname = run('hostname -s')
+    flavor = hostname.split('-')[-1]
+    _sync_to_gitbuilder('ceph', 'rpm', flavor)
 
 def _sync_to_gitbuilder(package, format, flavor):
     dist_or_codename = '`lsb_release -s -c`'
