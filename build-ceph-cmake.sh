@@ -1,6 +1,8 @@
 #!/bin/bash -x
 set -e
 
+. /srv/autobuild-ceph/timer.sh
+
 git submodule foreach 'git clean -fdx && git reset --hard'
 rm -rf ceph-object-corpus
 rm -rf ceph-erasure-code-corpus
@@ -20,13 +22,16 @@ git clean -fdx && git reset --hard
 git clean -fdx
 
 echo --START-IGNORE-WARNINGS
+print_elapsed_time "installing dependencies"
 [ ! -x install-deps.sh ] || ./install-deps.sh
 echo --STOP-IGNORE-WARNINGS
 
 mkdir build
 cd build
+print_elapsed_time "starting cmake"
 cmake ..
 
+print_elapsed_time "starting make"
 make -j$(nproc) "$@" || exit 4
 
 # run "make check", but give it a time limit in case a test gets stuck
@@ -43,6 +48,7 @@ printf '%s\n' "$REV" >"../$OUTDIR_TMP/sha1"
 MACH="$(uname -m)"
 INSTDIR="inst.tmp"
 [ ! -e "$INSTDIR" ]
+print_elapsed_time "starting make install"
 ../../maxtime 1800 ionice -c3 nice -n20 make install DESTDIR="$PWD/$INSTDIR"
 tar czf "../$OUTDIR_TMP/ceph.$MACH.tgz" -C "$INSTDIR" .
 rm -rf -- "$INSTDIR"
@@ -74,4 +80,5 @@ fi
 mv -- "$OUTDIR_TMP" "$OUTDIR"
 rm -rf -- "$OUTDIR.old"
 
+print_total_runtime
 exit 0

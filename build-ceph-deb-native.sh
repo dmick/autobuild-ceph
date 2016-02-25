@@ -1,5 +1,7 @@
-#!/bin/sh -x
+#!/bin/bash -x
 set -e
+
+. /srv/autobuild-ceph/timer.sh
 
 rm -rf out~
 git submodule foreach 'git clean -fdx && git reset --hard'
@@ -23,7 +25,9 @@ git clean -fdx
 DIST=`lsb_release -sc`
 
 echo --START-IGNORE-WARNINGS
+print_elapsed_time "installing dependencies"
 [ ! -x install-deps.sh ] || ./install-deps.sh
+print_elapsed_time "starting configure"
 [ ! -x autogen.sh ] || ./autogen.sh || exit 1
 autoconf || true
 echo --STOP-IGNORE-WARNINGS
@@ -55,6 +59,7 @@ fi
 # build the debs
 mkdir -p out~
 rm -rf out~/* || true
+print_elapsed_time "building debs"
 GNUPGHOME="/srv/gnupg" ionice -c3 nice -n20 timeout 2h /srv/ceph-build/build_snapshot_native.sh out~ $DIST
 
 VER=`cat out~/version`
@@ -68,6 +73,7 @@ printf '%s\n' "$REV" >"$OUTDIR_TMP/sha1"
 printf '%s\n' "$VER" >"$OUTDIR_TMP/version"
 printf '%s\n' "ceph" >"$OUTDIR_TMP/name"
 
+print_elapsed_time "building repos"
 mkdir -p $OUTDIR_TMP/conf
 /srv/ceph-build/gen_reprepro_conf.sh $OUTDIR_TMP 03C3951A
 
@@ -93,6 +99,7 @@ fi
 mv -- "$OUTDIR_TMP" "$OUTDIR"
 rm -rf -- "$OUTDIR.old"
 
+print_elapsed_time "merging repos"
 # rebuild combined debian repo output
 (
     cd ../out/output
@@ -100,4 +107,5 @@ rm -rf -- "$OUTDIR.old"
     GNUPGHOME="/srv/gnupg" /srv/ceph-build/merge_repos.sh combined sha1/*
 )
 
+print_total_runtime
 exit 0

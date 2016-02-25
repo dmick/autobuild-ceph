@@ -1,5 +1,7 @@
-#!/bin/sh -x
+#!/bin/bash -x
 set -e
+
+. /srv/autobuild-ceph/timer.sh
 
 rm -rf rpmbuild
 git submodule foreach 'git clean -fdx && git reset --hard'
@@ -48,7 +50,9 @@ then
 fi
 
 echo --START-IGNORE-WARNINGS
+print_elapsed_time "installing dependencies"
 [ ! -x install-deps.sh ] || ./install-deps.sh
+print_elapsed_time "starting configure"
 [ ! -x autogen.sh ] || ./autogen.sh || exit 1
 autoconf || true
 echo --STOP-IGNORE-WARNINGS
@@ -82,6 +86,7 @@ fi
 #  Build Source tarball.  We do this after runing autogen/configure so that
 #  ceph.spec has the correct version number filled in.
 echo "**** Building Tarball ***"
+print_elapsed_time "starting make dist-bzip2"
 make dist-bzip2
 
 # Set up build area
@@ -115,6 +120,7 @@ cp ceph.spec /tmp/ceph.spec
 
 # Build RPMs
 BUILDAREA=`readlink -fn ${BUILDAREA}`   ### rpm wants absolute path
+print_elapsed_time "starting rpmbuild"
 rpmbuild -ba --define "_topdir ${BUILDAREA}" ceph.spec
 
 # Create and build an RPM for the repository
@@ -230,6 +236,7 @@ fi
 
 # Sign RPMS
 export GNUPGHOME=/srv/gnupg
+print_elapsed_time "signing RPMs"
 echo "Signing RPMS ..."
 for file in `find ${BUILDAREA} -name "*.rpm"`
 do
@@ -237,6 +244,7 @@ do
 done
 
 # Create repo index for yum/zypper
+print_elapsed_time "making repos"
 for dir in ${BUILDAREA}/SRPMS ${BUILDAREA}/RPMS/*
 do
     createrepo ${dir}
@@ -293,4 +301,5 @@ fi
 mv -- "$OUTDIR_TMP" "$OUTDIR"
 rm -rf -- "$OUTDIR.old"
 
+print_total_runtime
 exit 0
